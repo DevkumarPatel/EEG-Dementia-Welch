@@ -18,10 +18,14 @@ from scipy.signal import periodogram, welch
 from mne.time_frequency import psd_array_multitaper
 from torch.utils.data.dataset import Dataset
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 
+
+mne.set_log_level('ERROR')
 import logging
 from mne.utils import set_log_level
-
+logging.basicConfig(level=logging.ERROR)
 class HiddenPrints:
     def __enter__(self):
         self._original_stdout = sys.stdout
@@ -195,6 +199,8 @@ class DS004504(Dataset):
             participant['signal_path'] = set_file
             participant['raw_path'] =set_file 
             participant['filtered_path'] = set_file.replace('ds004504/', 'ds004504/derivatives/')
+            participant['preprocessed_path'] = set_file.replace('ds004504/', 'ds004504/preprocessed/')
+                                                        
         return subjects
     
     def __len__(self):
@@ -592,13 +598,13 @@ class Epoch():
         logging.basicConfig(level=logging.WARNING)
         set_log_level('WARNING')
         signal = self.__getitem__(0)
-        fs = 500
+        fs = 250
         # Define the frequency range
         fmin = 1
-        fmax = 45
+        fmax = 40
 
         # Define common frequency grid
-        freq_grid = np.linspace(fmin, fmax, num=45)
+        freq_grid = np.linspace(fmin, fmax, num=fmax)
 
         # Periodogram
         frequencies_p, psd_p = periodogram(signal, fs)
@@ -631,12 +637,12 @@ class Epoch():
         logging.basicConfig(level=logging.WARNING)
         set_log_level('WARNING')
         signal = self.__getitem__(0)
-        fs = 500
+        fs = 250
         # Define the frequency range
         fmin = 1
-        fmax = 45
+        fmax = 40
         # Define common frequency grid
-        freq_grid = np.linspace(fmin, fmax, num=45)
+        freq_grid = np.linspace(fmin, fmax, num=fmax)
 
         # Periodogram
         frequencies_p, psd_p = periodogram(signal, fs)
@@ -652,12 +658,12 @@ class Epoch():
         logging.basicConfig(level=logging.WARNING)
         set_log_level('WARNING')
         signal = self.__getitem__(0)
-        fs = 500
+        fs = 250
         # Define the frequency range
         fmin = 1
-        fmax = 45
+        fmax = 40
         # Define common frequency grid
-        freq_grid = np.linspace(fmin, fmax, num=45)
+        freq_grid = np.linspace(fmin, fmax, num=fmax)
         # Welch
         frequencies_w, psd_w = welch(signal, fs, nperseg=fs)
         # Select the frequencies between fmin and fmax
@@ -677,12 +683,12 @@ class Epoch():
         logging.basicConfig(level=logging.WARNING)
         set_log_level('WARNING')
         signal = self.__getitem__(0)
-        fs = 500
+        fs = 250
         # Define the frequency range
         fmin = 1
-        fmax = 45
+        fmax = 40
         # Define common frequency grid
-        freq_grid = np.linspace(fmin, fmax, num=45)
+        freq_grid = np.linspace(fmin, fmax, num=40)
         # Multitaper
         frequencies_m, psd_m = psd_array_multitaper(signal, fs, fmin=fmin, fmax=fmax, adaptive=True)
         # Check if psd_m has the second dimension
@@ -695,7 +701,99 @@ class Epoch():
         return feature_vector_m
     
     
-    def plot_bands(self, signal=None, fs = 500, bands={
+    def getmne_multitaper(self, index=0):
+        signal = self.__getitem__(index)
+        fs = self.recording.info['sfreq']
+        
+        multitapered = mne.time_frequency.psd_array_multitaper(signal, sfreq=fs, fmin=1, fmax=40)
+        data = multitapered[0]
+        # Assuming the original data is in the frequency range of 1 to N
+        original_freqs = np.linspace(1, len(data), len(data))
+
+        # Desired frequency range and size
+        desired_freqs = np.linspace(1, 40, 40)
+
+        # Interpolation using numpy
+        interpolated_data_np = np.interp(desired_freqs, original_freqs, data)
+        
+        return interpolated_data_np
+    
+    def getmne_periodogram(self , index=0):
+        signal = self.__getitem__(index)
+        fs = self.recording.info['sfreq']
+        
+        if len(signal.shape) == 1:
+            signal = signal[np.newaxis, :]
+        
+        # Compute the PSD using Welch's method
+        psd, freqs = mne.time_frequency.psd_array_welch(
+            signal, sfreq=fs, fmin=1, fmax=40, 
+            n_fft=1024, n_overlap=256, n_per_seg=512  # Adjusted parameters
+        )
+        
+        # Desired frequency range and size
+        desired_freqs = np.linspace(1, 40, 40)
+        
+        # Interpolation using numpy
+        interpolated_psd = np.interp(desired_freqs, freqs, psd[0])
+        
+        return interpolated_psd
+        
+    def getmne_welch(self , index=0):
+        signal = self.__getitem__(index)
+        fs = self.recording.info['sfreq']
+        
+        if len(signal.shape) == 1:
+            signal = signal[np.newaxis, :]
+        
+        
+        # Define the window length and noverlap based on your requirements
+        window_length = signal.shape[1] // 4  # 1/4 of the EEG signal length
+        noverlap = window_length // 2  # half the window length
+        
+        # Compute the PSD using Welch's method
+        psd, freqs = mne.time_frequency.psd_array_welch(
+            signal, sfreq=fs, fmin=1, fmax=40, 
+            n_fft=window_length, n_overlap=noverlap, n_per_seg=window_length
+        )
+        
+        # Desired frequency range and size
+        desired_freqs = np.linspace(1, 40, 40)
+        
+        # Interpolation using numpy
+        interpolated_psd = np.interp(desired_freqs, freqs, psd[0])
+        
+        return interpolated_psd
+
+def getmne_welch(signal, fs=250):
+    # Ensure the signal is 2D (n_channels, n_times)
+    if len(signal.shape) == 1:
+        signal = signal[np.newaxis, :]
+    
+    # Define the window length and noverlap based on your requirements
+    window_length = signal.shape[1] // 4  # 1/4 of the EEG signal length
+    noverlap = window_length // 2  # half the window length
+    
+    # Compute the PSD using Welch's method
+    psd, freqs = mne.time_frequency.psd_array_welch(
+        signal, sfreq=fs, fmin=1, fmax=40, 
+        n_fft=window_length, n_overlap=noverlap, n_per_seg=window_length
+    )
+    
+    # Desired frequency range and size
+    desired_freqs = np.linspace(1, 40, 40)
+    
+    # Interpolation using numpy
+    interpolated_psd = np.interp(desired_freqs, freqs, psd[0])
+    
+    return interpolated_psd
+    
+    return interpolated_data_np
+    
+    
+    
+    
+    def plot_bands(self, signal=None, fs = 250, bands={
             'Delta (0.1-4 Hz)': (0.1, 4),  # Modified lower bound
             'Theta (4-8 Hz)': (4, 8),
             'Alpha (8-12 Hz)': (8, 12),
@@ -749,9 +847,23 @@ class SubjectType():
         random.shuffle(self.normal)
 
 class ExperimentDataset():
-    def __init__(self, data, label):
+    def __init__(self, data, label, makeCategories=None):
         self.data = data
         self.label = label
+        if makeCategories != None:
+            self.ad_cn = ExperimentDataset.classSpliter(data, label, incl=['A','C'])
+            self.ad_ftd = ExperimentDataset.classSpliter(data, label, incl=['A','F'])
+            self.cn_ftd = ExperimentDataset.classSpliter(data, label, incl=['C','F'])
+        
+    @staticmethod
+    def classSpliter(data, labels, incl=['A', 'C']):
+        newData = []
+        newLabel = []
+        for i in range(0, len(data)):
+            if labels[i] in incl:
+                newData.append(data[i])
+                newLabel.append(labels[i])
+        return ExperimentDataset(newData, newLabel)
         
     def get_distribution(self):
         label_counts = Counter(self.label)
@@ -781,17 +893,25 @@ class ExperimentDataset():
             print(f"{label} --> {count} :--> {percentage:.2f}%")
 
 
+
+
+
+
 class Experiment():
     def __init__(self, data):
         labels = []
         for epoch in data: 
             labels.append(epoch.label)
 
-        X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.3, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.3, random_state=42, stratify=labels)
 
         
-        self.train = ExperimentDataset(X_train, y_train)
-        self.test = ExperimentDataset(X_test,y_test)
+        self.train = ExperimentDataset(X_train, y_train, makeCategories=True)
+        self.test = ExperimentDataset(X_test,y_test, makeCategories=True)
+        
+        
+        
+        
         
          
     
@@ -826,7 +946,7 @@ class EEGDataset(Dataset):
                 group=participant['Group'],
                 mmse=participant['MMSE'],
                 raw_path=participant['raw_path'],
-                filtered_path=participant['filtered_path']
+                filtered_path=participant['preprocessed_path']
             )
             self.subjects.append(subject)
 
@@ -926,7 +1046,94 @@ class EEGDataset(Dataset):
         
         
         
+
+
+
+
+def ML_EEG(model, XX_train, yy_train, XX_test, yy_test, label="lda"):
+    X = np.array(XX_train)
+    y = np.array(yy_train)
+
+    # Initialize LDA object
+    lda = model
+
+    # Initialize StratifiedKFold object
+    cv = StratifiedKFold(n_splits=10)
+
+    # Initialize metrics
+    accuracies = []
+    sensitivities = []
+    specificities = []
+    precisions = []
+    f1_scores = []
+
+    for train_index, test_index in cv.split(X, y):
+        
+        X_train, X_test = X[train_index], X[test_index]
+        y_train, y_test = y[train_index], y[test_index]
+
+        lda.fit(X_train, y_train)
+        y_pred = lda.predict(X_test)
+
+        # Confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+
+        # Accuracy
+        acc = accuracy_score(y_test, y_pred)
+        accuracies.append(acc)
+
+        # Sensitivity (recall)
+        sens = recall_score(y_test, y_pred, average='macro')
+        sensitivities.append(sens)
+
+        # Specificity
+        spec = (cm.sum(axis=1) - np.diag(cm)) / (cm.sum(axis=1) + cm.sum(axis=0) - np.diag(cm))
+        specificities.append(np.mean(spec))  # Taking mean of specificity for all classes
+
+        # Precision
+        prec = precision_score(y_test, y_pred, average='macro')
+        precisions.append(prec)
+
+        # F1-score
+        f1 = f1_score(y_test, y_pred, average='macro')
+        f1_scores.append(f1)
+
+    # Calculate average metrics
+    average_accuracy = np.mean(accuracies)
+    average_sensitivity = np.mean(sensitivities)
+    average_specificity = np.mean(specificities)
+    average_precision = np.mean(precisions)
+    average_f1_score = np.mean(f1_scores)
+
+    print(f"{label}")
+    # Print average metrics
+    print(f"Average Model Accuracy: {average_accuracy * 100:.2f}%")
+    print(f"Average Sensitivity/Recall: {average_sensitivity:.2f}")
+    print(f"Average Specificity: {average_specificity:.2f}")
+    print(f"Average Precision: {average_precision:.2f}")
+    print(f"Average F1 Score: {average_f1_score:.2f}")  
     
+    print(f"& {average_sensitivity*100:.1f} & {average_specificity*100:.1f} & {average_precision*100:.1f} & {average_f1_score*100:.1f} & {average_accuracy*100:.1f}")
+    y_pred_final = lda.predict(XX_test)
+    y_test_final = yy_test
+
+    # Calculate and print metrics for the final test set
+    accuracy_final = accuracy_score(y_test_final, y_pred_final)
+    sensitivity_final = recall_score(y_test_final, y_pred_final, average='weighted')
+    precision_final = precision_score(y_test_final, y_pred_final, average='weighted')
+    f1_score_final = f1_score(y_test_final, y_pred_final, average='weighted')
+
+    # Calculating Specificity for the model as a whole can be complex and might require a one-vs-all approach for multi-class problems.
+    # However, for binary classification, it can be calculated from the confusion matrix.
+    cm_final = confusion_matrix(y_test_final, y_pred_final)
+    specificity_final = cm_final[1,1] / (cm_final[1,1] + cm_final[0,1])  # For binary classification
+
+    #print(f"\nValidation Test Results:")
+    #print(f"Accuracy: {accuracy_final * 100:.2f}%")
+    #print(f"Sensitivity/Recall: {sensitivity_final:.2f}")
+    #print(f"Specificity: {specificity_final:.2f}")
+    #print(f"Precision: {precision_final:.2f}")
+    #print(f"F1 Score: {f1_score_final:.2f}")   
         
         
         
